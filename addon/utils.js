@@ -1,10 +1,13 @@
+import { later, cancel } from '@ember/runloop';
+import { Promise } from 'rsvp';
+import ComputedProperty from '@ember/object/computed';
 import Ember from 'ember';
 
-export function isGeneratorIterator(iter) {
-  return (iter &&
-          typeof iter.next      === 'function' &&
-          typeof iter['return'] === 'function' &&
-          typeof iter['throw']  === 'function');
+export function isEventedObject(c) {
+  return (c && (
+    (typeof c.one === 'function' && typeof c.off === 'function') ||
+    (typeof c.addEventListener === 'function' && typeof c.removeEventListener === 'function')
+  ));
 }
 
 export function Arguments(args, defer) {
@@ -39,54 +42,8 @@ export let objectAssign = Object.assign || function objectAssign(target) {
   return target;
 };
 
-export function createObservable(fn) {
-  return {
-    subscribe(onNext, onError, onCompleted) {
-      let isDisposed = false;
-      let isComplete = false;
-      let publish = (v) => {
-        if (isDisposed || isComplete) { return; }
-        joinAndSchedule(null, onNext, v);
-      };
-      publish.error = (e) => {
-        if (isDisposed || isComplete) { return; }
-        joinAndSchedule(() => {
-          if (onError) { onError(e); }
-          if (onCompleted) { onCompleted(); }
-        });
-      };
-      publish.complete = () => {
-        if (isDisposed || isComplete) { return; }
-        isComplete = true;
-        joinAndSchedule(() => {
-          if (onCompleted) { onCompleted(); }
-        });
-      };
-
-      // TODO: publish.complete?
-
-      let maybeDisposer = fn(publish);
-      let disposer = typeof maybeDisposer === 'function' ? maybeDisposer : Ember.K;
-
-      return {
-        dispose() {
-          if (isDisposed) { return; }
-          isDisposed = true;
-          disposer();
-        },
-      };
-    },
-  };
-}
-
-function joinAndSchedule(...args) {
-  Ember.run.join(() => {
-    Ember.run.schedule('actions', ...args);
-  });
-}
-
-export function _cleanupOnDestroy(owner, object, cleanupMethodName) {
-  // TODO: find a non-mutate-y, hacky way of doing this.
+export function _cleanupOnDestroy(owner, object, cleanupMethodName, ...args) {
+  // TODO: find a non-mutate-y, non-hacky way of doing this.
 
   if (!owner.willDestroy)
   {
@@ -108,16 +65,84 @@ export function _cleanupOnDestroy(owner, object, cleanupMethodName) {
   }
 
   owner.willDestroy.__ember_processes_destroyers__.push(() => {
-    object[cleanupMethodName]();
+    object[cleanupMethodName](...args);
   });
 }
 
 export let INVOKE = "__invoke_symbol__";
-try { INVOKE = Ember.__loader.require('ember-routing-htmlbars/keywords/closure-action')['INVOKE'] || INVOKE; } catch(e) {}
-try { INVOKE = Ember.__loader.require('ember-routing/keywords/closure-action')['INVOKE'] || INVOKE; } catch(e) {}
+
+let locations = [
+  'ember-glimmer/helpers/action',
+  'ember-routing-htmlbars/keywords/closure-action',
+  'ember-routing/keywords/closure-action'
+];
+
+for (let i = 0; i < locations.length; i++) {
+  if (locations[i] in Ember.__loader.registry) {
+    INVOKE = Ember.__loader.require(locations[i])['INVOKE'];
+    break;
+  }
+}
 
 // TODO: Symbol polyfill?
 export const yieldableSymbol = "__ec_yieldable__";
+export const YIELDABLE_CONTINUE = "next";
+export const YIELDABLE_THROW = "throw";
+export const YIELDABLE_RETURN = "return";
+export const YIELDABLE_CANCEL = "cancel";
 
-export const _ComputedProperty = Ember.__loader.require("ember-metal/computed").ComputedProperty;
+export const _ComputedProperty = ComputedProperty;
 
+/**
+ *
+ * Yielding `timeout(ms)` will pause a task for the duration
+ * of time passed in, in milliseconds.
+ *
+ * The task below, when performed, will print a message to the
+ * console every second.
+ *
+ * ```js
+ * export default Component.extend({
+ *   myTask: task(function * () {
+ *     while (true) {
+ *       console.log("Hello!");
+ *       yield timeout(1000);
+ *     }
+ *   })
+ * });
+ * ```
+ *
+ * @param {number} ms - the amount of time to sleep before resuming
+ *   the task, in milliseconds
+ */
+export function timeout(ms) {
+  let timerId;
+  let promise = new Promise(r => {
+    timerId = later(r, ms);
+  });
+  promise.__ec_cancel__ = () => {
+    cancel(timerId);
+  };
+  return promise;
+}
+
+export function RawValue(value) {
+  this.value = value;
+}
+
+export function raw(value) {
+  return new RawValue(value);
+}
+
+export function rawTimeout(ms) {
+  return {
+    [yieldableSymbol](taskInstance, resumeIndex) {
+      let timerId = setTimeout(() => {
+        taskInstance.proceed(resumeIndex, YIELDABLE_CONTINUE, this._result);
+      }, ms);
+      return () => {
+        window.clearInterval(timerId);
+      };
+    }
+  };
+}

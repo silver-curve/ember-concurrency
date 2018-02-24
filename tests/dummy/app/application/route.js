@@ -1,10 +1,15 @@
+import Route from '@ember/routing/route';
+import { inject } from '@ember/service';
 import Ember from 'ember';
 
-export default Ember.Route.extend({
+export default Route.extend({
+  fastboot: inject(),
+
   beforeModel() {
-    this.router.on('didTransition', () => {
-      window.scrollTo(0,0);
-    });
+    if (!Ember.testing && !this.get('fastboot.isFastBoot')) {
+      this.router.on('didTransition', () => {
+        window.scrollTo(0,0);
+      });
+    }
   }
 });
-

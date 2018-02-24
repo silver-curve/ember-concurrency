@@ -1,11 +1,41 @@
+import { scheduleOnce } from '@ember/runloop';
+import { addObserver } from '@ember/object/observers';
+import { addListener } from '@ember/object/events';
+import EmberObject from '@ember/object';
+import { getOwner } from '@ember/application';
 import Ember from 'ember';
-import TaskInstance from './-task-instance';
+import {
+  default as TaskInstance,
+  getRunningInstance
+} from './-task-instance';
+import {
+  PERFORM_TYPE_DEFAULT,
+  PERFORM_TYPE_UNLINKED,
+  PERFORM_TYPE_LINKED
+} from './-task-instance';
 import TaskStateMixin from './-task-state-mixin';
 import { TaskGroup } from './-task-group';
-import { propertyModifiers, resolveScheduler } from './-property-modifiers-mixin';
-import { objectAssign, INVOKE, _cleanupOnDestroy, _ComputedProperty } from './utils';
+import {
+  propertyModifiers,
+  resolveScheduler
+} from './-property-modifiers-mixin';
+import {
+  objectAssign,
+  INVOKE,
+  _cleanupOnDestroy,
+  _ComputedProperty
+} from './utils';
 import EncapsulatedTask from './-encapsulated-task';
-import getOwner from 'ember-getowner-polyfill';
+
+const PerformProxy = EmberObject.extend({
+  _task: null,
+  _performType: null,
+  _linkedObject: null,
+
+  perform(...args) {
+    return this._task._performShared(args, this._performType, this._linkedObject);
+  },
+});
 
 /**
   The `Task` object lives on a host Ember object (e.g.
@@ -24,22 +54,132 @@ import getOwner from 'ember-getowner-polyfill';
 
   @class Task
 */
-export const Task = Ember.Object.extend(TaskStateMixin, {
+export const Task = EmberObject.extend(TaskStateMixin, {
+  /**
+   * `true` if any current task instances are running.
+   *
+   * @memberof Task
+   * @member {boolean} isRunning
+   * @instance
+   * @readOnly
+   */
+
+  /**
+   * `true` if any future task instances are queued.
+   *
+   * @memberof Task
+   * @member {boolean} isQueued
+   * @instance
+   * @readOnly
+   */
+
+  /**
+   * `true` if the task is not in the running or queued state.
+   *
+   * @memberof Task
+   * @member {boolean} isIdle
+   * @instance
+   * @readOnly
+   */
+
+  /**
+   * The current state of the task: `"running"`, `"queued"` or `"idle"`.
+   *
+   * @memberof Task
+   * @member {string} state
+   * @instance
+   * @readOnly
+   */
+
+  /**
+   * The most recently started task instance.
+   *
+   * @memberof Task
+   * @member {TaskInstance} last
+   * @instance
+   * @readOnly
+   */
+
+  /**
+   * The most recent task instance that is currently running.
+   *
+   * @memberof Task
+   * @member {TaskInstance} lastRunning
+   * @instance
+   * @readOnly
+   */
+
+  /**
+   * The most recently performed task instance.
+   *
+   * @memberof Task
+   * @member {TaskInstance} lastPerformed
+   * @instance
+   * @readOnly
+   */
+
+  /**
+   * The most recent task instance that succeeded.
+   *
+   * @memberof Task
+   * @member {TaskInstance} lastSuccessful
+   * @instance
+   * @readOnly
+   */
+
+  /**
+   * The most recently completed task instance.
+   *
+   * @memberof Task
+   * @member {TaskInstance} lastComplete
+   * @instance
+   * @readOnly
+   */
+
+  /**
+   * The most recent task instance that errored.
+   *
+   * @memberof Task
+   * @member {TaskInstance} lastErrored
+   * @instance
+   * @readOnly
+   */
+
+  /**
+   * The most recently canceled task instance.
+   *
+   * @memberof Task
+   * @member {TaskInstance} lastCanceled
+   * @instance
+   * @readOnly
+   */
+
+  /**
+   * The most recent task instance that is incomplete.
+   *
+   * @memberof Task
+   * @member {TaskInstance} lastIncomplete
+   * @instance
+   * @readOnly
+   */
+
+  /**
+   * The number of times this task has been performed.
+   *
+   * @memberof Task
+   * @member {number} performCount
+   * @instance
+   * @readOnly
+   */
+
   fn: null,
   context: null,
   _observes: null,
   _curryArgs: null,
+  _linkedObjects: null,
 
   init() {
     this._super(...arguments);
-
-    let self = this;
-    this.perform = function(...args) {
-      if (this !== self) {
-        console.warn(`The use of ${self._propertyName}.perform within a template is deprecated and won't be supported in future versions of ember-concurrency. Please use the \`perform\` helper instead, e.g. {{perform ${self._propertyName}}}`);
-      }
-      return self._perform(...args);
-    };
 
     if (typeof this.fn === 'object') {
       let owner = getOwner(this.context);
@@ -47,13 +187,33 @@ export const Task = Ember.Object.extend(TaskStateMixin, {
       this._taskInstanceFactory = EncapsulatedTask.extend(ownerInjection, this.fn);
     }
 
-    _cleanupOnDestroy(this.context, this, 'cancelAll');
+    _cleanupOnDestroy(this.context, this, 'cancelAll', 'the object it lives on was destroyed or unrendered');
   },
 
   _curry(...args) {
     let task = this._clone();
     task._curryArgs = [...(this._curryArgs || []), ...args];
     return task;
+  },
+
+  linked() {
+    let taskInstance = getRunningInstance();
+    if (!taskInstance) {
+      throw new Error(`You can only call .linked() from within a task.`);
+    }
+
+    return PerformProxy.create({
+      _task: this,
+      _performType: PERFORM_TYPE_LINKED,
+      _linkedObject: taskInstance,
+    });
+  },
+
+  unlinked() {
+    return PerformProxy.create({
+      _task: this,
+      _performType: PERFORM_TYPE_UNLINKED,
+    });
   },
 
   _clone() {
@@ -64,7 +224,6 @@ export const Task = Ember.Object.extend(TaskStateMixin, {
       _taskGroupPath: this._taskGroupPath,
       _scheduler: this._scheduler,
       _propertyName: this._propertyName,
-      _debugCallback: this._debugCallback,
     });
   },
 
@@ -167,20 +326,6 @@ export const Task = Ember.Object.extend(TaskStateMixin, {
    */
 
   /**
-   * Creates a new {@linkcode TaskInstance} and attempts to run it right away.
-   * If running this task instance would increase the task's concurrency
-   * to a number greater than the task's maxConcurrency, this task
-   * instance might be immediately canceled (dropped), or enqueued
-   * to run at later time, after the currently running task(s) have finished.
-   *
-   * @method perform
-   * @memberof Task
-   * @param {*} arg* - args to pass to the task function
-   * @instance
-   */
-  perform: null,
-
-  /**
    * Cancels all running or queued `TaskInstance`s for this Task.
    * If you're trying to cancel a specific TaskInstance (rather
    * than all of the instances running under this task) call
@@ -197,12 +342,23 @@ export const Task = Ember.Object.extend(TaskStateMixin, {
 
   _taskInstanceFactory: TaskInstance,
 
-  _perform(...args) {
-    //let performsTask = this.get('_performs');
-    //if (performsTask) {
-      //args.unshift(performsTask);
-    //}
+  /**
+   * Creates a new {@linkcode TaskInstance} and attempts to run it right away.
+   * If running this task instance would increase the task's concurrency
+   * to a number greater than the task's maxConcurrency, this task
+   * instance might be immediately canceled (dropped), or enqueued
+   * to run at later time, after the currently running task(s) have finished.
+   *
+   * @method perform
+   * @memberof Task
+   * @param {*} arg* - args to pass to the task function
+   * @instance
+   */
+  perform(...args) {
+    return this._performShared(args, PERFORM_TYPE_DEFAULT, null);
+  },
 
+  _performShared(args, performType, linkedObject) {
     let fullArgs = this._curryArgs ? [...this._curryArgs, ...args] : args;
     let taskInstance = this._taskInstanceFactory.create({
       fn: this.fn,
@@ -210,28 +366,23 @@ export const Task = Ember.Object.extend(TaskStateMixin, {
       context: this.context,
       owner: this.context,
       task: this,
+      _debug: this._debug,
       _origin: this,
-      _debugCallback: this._debugCallback,
+      _performType: performType,
     });
 
+    if (performType === PERFORM_TYPE_LINKED) {
+      linkedObject._expectsLinkedYield = true;
+    }
+
     if (this.context.isDestroying) {
+      // TODO: express this in terms of lifetimes; a task linked to
+      // a dead lifetime should immediately cancel.
       taskInstance.cancel();
     }
 
-    //if (this._debugCallback) {
-      //this._debugCallback({
-        //type: 'perform',
-        //taskInstance,
-        //task: this,
-      //});
-    //}
-
     this._scheduler.schedule(taskInstance);
     return taskInstance;
-  },
-
-  _getCompletionPromise() {
-    return this._scheduler.getCompletionPromise();
   },
 
   [INVOKE](...args) {
@@ -255,44 +406,25 @@ export const Task = Ember.Object.extend(TaskStateMixin, {
 
   @class TaskProperty
 */
-export function TaskProperty(...decorators) {
-  let taskFn = decorators.pop();
-  let _performsPath;
-
+export function TaskProperty(taskFn) {
   let tp = this;
   _ComputedProperty.call(this, function(_propertyName) {
+    taskFn.displayName = `${_propertyName} (task)`;
     return Task.create({
-      fn: taskFn,
+      fn: tp.taskFn,
       context: this,
       _origin: this,
       _taskGroupPath: tp._taskGroupPath,
       _scheduler: resolveScheduler(tp, this, TaskGroup),
-      //_performsPath,
       _propertyName,
-      _debugCallback: tp._debugCallback,
+      _debug: tp._debug,
     });
   });
 
+  this.taskFn = taskFn;
   this.eventNames = null;
   this.cancelEventNames = null;
-  this._debugCallback = null;
   this._observes = null;
-
-  for (let i = 0; i < decorators.length; ++i) {
-    let decorator = decorators[i];
-    if (typeof decorator === 'function') {
-      applyDecorator(this, decorator);
-    } else {
-      _performsPath = decorator;
-    }
-  }
-}
-
-function applyDecorator(taskProperty, decorator) {
-  let value = decorator(taskProperty);
-  if (typeof value === 'function') {
-    value(taskProperty);
-  }
 }
 
 TaskProperty.prototype = Object.create(_ComputedProperty.prototype);
@@ -300,9 +432,13 @@ objectAssign(TaskProperty.prototype, propertyModifiers, {
   constructor: TaskProperty,
 
   setup(proto, taskName) {
-    registerOnPrototype(Ember.addListener, proto, this.eventNames, taskName, '_perform', false);
-    registerOnPrototype(Ember.addListener, proto, this.cancelEventNames, taskName, 'cancelAll', false);
-    registerOnPrototype(Ember.addObserver, proto, this._observes, taskName, '_perform', true);
+    if (this._maxConcurrency !== Infinity && !this._hasSetBufferPolicy) {
+      Ember.Logger.warn(`The use of maxConcurrency() without a specified task modifier is deprecated and won't be supported in future versions of ember-concurrency. Please specify a task modifier instead, e.g. \`${taskName}: task(...).enqueue().maxConcurrency(${this._maxConcurrency})\``);
+    }
+
+    registerOnPrototype(addListener, proto, this.eventNames, taskName, 'perform', false);
+    registerOnPrototype(addListener, proto, this.cancelEventNames, taskName, 'cancelAll', false);
+    registerOnPrototype(addObserver, proto, this._observes, taskName, 'perform', true);
   },
 
   /**
@@ -440,15 +576,32 @@ objectAssign(TaskProperty.prototype, propertyModifiers, {
    * @instance
    */
 
-  _debug(cb) {
-    this._debugCallback = cb || defaultDebugCallback;
-    return this;
+  /**
+   * Adds this task to a TaskGroup so that concurrency constraints
+   * can be shared between multiple tasks.
+   *
+   * [See the Task Group docs for more information](/#/docs/task-groups)
+   *
+   * @method group
+   * @memberof TaskProperty
+   * @param {String} groupPath A path to the TaskGroup property
+   * @instance
+   */
+
+  /**
+   * Logs lifecycle events to aid in debugging unexpected Task behavior.
+   * Presently only logs cancelation events and the reason for the cancelation,
+   * e.g. "TaskInstance 'doStuff' was canceled because the object it lives on was destroyed or unrendered"
+   *
+   * @method debug
+   * @memberof TaskProperty
+   * @instance
+   */
+
+  perform() {
+    throw new Error("It looks like you tried to perform a task via `this.nameOfTask.perform()`, which isn't supported. Use `this.get('nameOfTask').perform()` instead.");
   },
 });
-
-function defaultDebugCallback(payload) {
-  console.log(payload);
-}
 
 function registerOnPrototype(addListenerOrObserver, proto, names, taskName, taskMethod, once) {
   if (names) {
@@ -464,10 +617,9 @@ function makeTaskCallback(taskName, method, once) {
     let task = this.get(taskName);
 
     if (once) {
-      Ember.run.scheduleOnce('actions', task, method, ...arguments);
+      scheduleOnce('actions', task, method, ...arguments);
     } else {
       task[method].apply(task, arguments);
     }
   };
 }
-

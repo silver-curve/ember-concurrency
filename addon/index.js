@@ -1,22 +1,10 @@
-import Ember from 'ember';
-import { isGeneratorIterator, createObservable } from './utils';
+import { timeout } from './utils';
 import { TaskProperty } from './-task-property';
 import { didCancel } from './-task-instance';
 import { TaskGroupProperty } from './-task-group';
 import EventedObservable from './-evented-observable';
-import { subscribe } from './-subscribe';
-import { all, race } from './-yieldables';
-import { drop, restartable, enqueue, maxConcurrency, cancelOn, performOn } from './-decorators';
-
-let testGenFn = function * () {};
-let testIter = testGenFn();
-Ember.assert(`ember-concurrency requires that you set babel.includePolyfill to true in your ember-cli-build.js (or Brocfile.js) to ensure that the generator function* syntax is properly transpiled, e.g.:
-
-  var app = new EmberApp({
-    babel: {
-      includePolyfill: true,
-    }
-  });`, isGeneratorIterator(testIter));
+import { all, allSettled, hash, race } from './-cancelable-promise-helpers';
+import { waitForQueue, waitForEvent, waitForProperty } from './-wait-for';
 
 /**
  * A Task is a cancelable, restartable, asynchronous operation that
@@ -30,6 +18,11 @@ Ember.assert(`ember-concurrency requires that you set babel.includePolyfill to t
  * that they (like the proposed ES7 async-await syntax) can
  * be used to elegantly express asynchronous, cancelable
  * operations.
+ *
+ * You can also define an
+ * <a href="/#/docs/encapsulated-task">Encapsulated Task</a>
+ * by passing in an object that defined a `perform` generator
+ * function property.
  *
  * The following Component defines a task called `myTask` that,
  * when performed, prints a message to the console, sleeps for 1 second,
@@ -62,60 +55,29 @@ export function task(...args) {
   return new TaskProperty(...args);
 }
 
-export function taskGroup(...args) {
-  return new TaskGroupProperty(...args);
-}
-
 /**
- * @private
- */
-export let _numIntervals = 0;
-
-/**
- * @private
- */
-export function interval(ms) {
-  return createObservable(publish => {
-    let intervalId = setInterval(publish, ms);
-    _numIntervals++;
-    return () => {
-      clearInterval(intervalId);
-      _numIntervals--;
-    };
-  });
-}
-
-/**
- *
- * Yielding `timeout(ms)` will pause a task for the duration
- * of time passed in, in milliseconds.
- *
- * The task below, when performed, will print a message to the
- * console every second.
+ * "Task Groups" provide a means for applying
+ * task modifiers to groups of tasks. Once a {@linkcode Task} is declared
+ * as part of a group task, modifiers like `drop()` or `restartable()`
+ * will no longer affect the individual `Task`. Instead those
+ * modifiers can be applied to the entire group.
  *
  * ```js
- * export default Component.extend({
- *   myTask: task(function * () {
- *     while (true) {
- *       console.log("Hello!");
- *       yield timeout(1000);
- *     }
- *   })
+ * import { task, taskGroup } from 'ember-concurrency';
+ *
+ * export default Controller.extend({
+ *   chores: taskGroup().drop(),
+ *
+ *   mowLawn:       task(taskFn).group('chores'),
+ *   doDishes:      task(taskFn).group('chores'),
+ *   changeDiapers: task(taskFn).group('chores')
  * });
  * ```
  *
- * @param {number} ms - the amount of time to sleep before resuming
- *   the task, in milliseconds
- */
-export function timeout(ms) {
-  let timerId;
-  let promise = new Ember.RSVP.Promise(r => {
-    timerId = Ember.run.later(r, ms);
-  });
-  promise.__ec_cancel__ = () => {
-    Ember.run.cancel(timerId);
-  };
-  return promise;
+ * @returns {TaskGroup}
+*/
+export function taskGroup(...args) {
+  return new TaskGroupProperty(...args);
 }
 
 export function events(obj, eventName) {
@@ -123,16 +85,13 @@ export function events(obj, eventName) {
 }
 
 export {
-  createObservable,
   all,
+  allSettled,
+  didCancel,
+  hash,
   race,
-  subscribe,
-  drop,
-  restartable,
-  enqueue,
-  maxConcurrency,
-  cancelOn,
-  performOn,
-  didCancel
+  timeout,
+  waitForQueue,
+  waitForEvent,
+  waitForProperty
 };
-

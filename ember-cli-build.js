@@ -1,8 +1,18 @@
-/*jshint node:true*/
-/* global require, module */
-var EmberAddon = require('ember-cli/lib/broccoli/ember-addon');
+'use strict';
+
+const EmberAddon = require('ember-cli/lib/broccoli/ember-addon');
+const urls = require('./lib/prember-urls');
 
 module.exports = function(defaults) {
+  var includePolyfill = process.env.EMBER_ENV === 'production' || process.env.CI;
+
+  var babelOptions = {};
+  if (includePolyfill) {
+    babelOptions.includePolyfill = true;
+  } else {
+    babelOptions.blacklist = ['regenerator'];
+  }
+
   var app = new EmberAddon(defaults, {
     minifyJS: {
       enabled: false
@@ -15,8 +25,12 @@ module.exports = function(defaults) {
       useScss: true
     },
 
-    babel: {
-      includePolyfill: true
+    babel: babelOptions,
+
+    prember: {
+      urls,
+      // GitHub Pages uses this filename to serve 404s
+      emptyFile: '404.html'
     }
   });
 

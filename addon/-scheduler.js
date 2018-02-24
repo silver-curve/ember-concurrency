@@ -1,6 +1,9 @@
-import Ember from 'ember';
+import { once } from '@ember/runloop';
+import EmberObject, { set, get } from '@ember/object';
 
-const Scheduler = Ember.Object.extend({
+let SEEN_INDEX = 0;
+
+const Scheduler = EmberObject.extend({
   lastPerformed:  null,
   lastStarted:    null,
   lastRunning:    null,
@@ -9,144 +12,142 @@ const Scheduler = Ember.Object.extend({
   lastErrored:    null,
   lastCanceled:   null,
   lastIncomplete: null,
+  performCount: 0,
 
   boundHandleFulfill: null,
   boundHandleReject: null,
 
   init() {
     this._super(...arguments);
-    this.activeTaskInstances = Ember.A();
-    this.queuedTaskInstances = Ember.A();
+    this.activeTaskInstances = [];
+    this.queuedTaskInstances = [];
   },
 
-  cancelAll() {
-    let seen = {};
-    this.spliceTaskInstances(this.activeTaskInstances, 0, this.activeTaskInstances.length, seen);
-    this.spliceTaskInstances(this.queuedTaskInstances, 0, this.queuedTaskInstances.length, seen);
+  cancelAll(reason) {
+    let seen = [];
+    this.spliceTaskInstances(reason, this.activeTaskInstances, 0, this.activeTaskInstances.length, seen);
+    this.spliceTaskInstances(reason, this.queuedTaskInstances, 0, this.queuedTaskInstances.length, seen);
     flushTaskCounts(seen);
   },
 
-  spliceTaskInstances(taskInstances, index, count, seen) {
+  spliceTaskInstances(cancelReason, taskInstances, index, count, seen) {
     for (let i = index; i < index + count; ++i) {
       let taskInstance = taskInstances[i];
-      taskInstance.cancel();
+
+      if (!taskInstance.hasStarted) {
+        // This tracking logic is kinda spread all over the place...
+        // maybe TaskInstances themselves could notify
+        // some delegate of queued state changes upon cancelation?
+        taskInstance.task.decrementProperty('numQueued');
+      }
+
+      taskInstance.cancel(cancelReason);
       if (seen) {
-        seen[Ember.guidFor(taskInstance)] = taskInstance.task;
+        seen.push(taskInstance.task);
       }
     }
     taskInstances.splice(index, count);
   },
 
   schedule(taskInstance) {
-    this.set('lastPerformed', taskInstance);
+    set(this, 'lastPerformed', taskInstance);
+    this.incrementProperty('performCount');
+    taskInstance.task.incrementProperty('numQueued');
     this.queuedTaskInstances.push(taskInstance);
-    this._scheduleFlush();
-    //this.notifyPropertyChange('nextPerformState');
-  },
-
-  _flushScheduled: false,
-  _scheduleFlush() {
-    this._flushScheduled = true;
-    Ember.run.once(this, this._flushQueues);
+    this._flushQueues();
   },
 
   _flushQueues() {
-    this._flushScheduled = false;
-    let seen = {};
+    let seen = [];
 
     for (let i = 0; i < this.activeTaskInstances.length; ++i) {
-      let task = this.activeTaskInstances[i].task;
-      seen[Ember.guidFor(task)] = task;
+      seen.push(this.activeTaskInstances[i].task);
     }
 
-    this.activeTaskInstances = Ember.A(this.activeTaskInstances.filterBy('isFinished', false));
+    this.activeTaskInstances = filterFinished(this.activeTaskInstances);
+
     this.bufferPolicy.schedule(this);
 
-    let lastStarted = null;
+    var lastStarted = null;
     for (let i = 0; i < this.activeTaskInstances.length; ++i) {
-
       let taskInstance = this.activeTaskInstances[i];
       if (!taskInstance.hasStarted) {
-        // use internal promise so that it doesn't cancel error reporting
-        taskInstance._start()._defer.promise.then(() => {
-          this.set('lastSuccessful', taskInstance);
-          this.set('lastComplete', taskInstance);
-          this._scheduleFlush();
-        }, error => {
-          if (error && error.name === 'TaskCancelation') {
-            this.set('lastCanceled', taskInstance);
-          } else {
-            this.set('lastErrored', taskInstance);
-          }
-          this.set('lastComplete', taskInstance);
-          this.set('lastIncomplete', taskInstance);
-          this._scheduleFlush();
-        });
-        this.set('lastStarted', taskInstance);
+        this._startTaskInstance(taskInstance);
         lastStarted = taskInstance;
       }
-      let task = taskInstance.task;
-      seen[Ember.guidFor(task)] = task;
-      task._numRunning++;
+      seen.push(taskInstance.task);
     }
 
     if (lastStarted) {
-      this.set('lastStarted', lastStarted);
+      set(this, 'lastStarted', lastStarted);
     }
-    this.set('lastRunning', lastStarted);
+    set(this, 'lastRunning', lastStarted);
 
     for (let i = 0; i < this.queuedTaskInstances.length; ++i) {
-      let task = this.queuedTaskInstances[i].task;
-      seen[Ember.guidFor(task)] = task;
-      task._numQueued++;
+      seen.push(this.queuedTaskInstances[i].task);
     }
 
     flushTaskCounts(seen);
-
-    let concurrency = this.activeTaskInstances.length;
-    this.set('concurrency', concurrency);
-    if (this.completionDefer && concurrency === 0) {
-      this.completionDefer.resolve();
-      this.completionDefer = null;
-    }
+    set(this, 'concurrency', this.activeTaskInstances.length);
   },
 
-  completionDefer: null,
-  getCompletionPromise() {
-    return new Ember.RSVP.Promise(r => {
-      Ember.run.schedule('actions', null, () => {
-        let defer = Ember.RSVP.defer();
-        if (!this._flushScheduled &&
-            this.activeTaskInstances.length === 0 &&
-            this.queuedTaskInstances.length === 0) {
-          defer.resolve();
-        } else {
-          this.completionDefer = defer;
+  _startTaskInstance(taskInstance) {
+    let task = taskInstance.task;
+    task.decrementProperty('numQueued');
+    task.incrementProperty('numRunning');
+
+    taskInstance._start()._onFinalize(() => {
+      task.decrementProperty('numRunning');
+      var state = taskInstance._completionState;
+      set(this, 'lastComplete', taskInstance);
+      if (state === 1) {
+        set(this, 'lastSuccessful', taskInstance);
+      } else {
+        if (state === 2) {
+          set(this, 'lastErrored', taskInstance);
+        } else if (state === 3) {
+          set(this, 'lastCanceled', taskInstance);
         }
-        defer.promise.then(r);
-      });
+        set(this, 'lastIncomplete', taskInstance);
+      }
+      once(this, this._flushQueues);
     });
-  },
+  }
 });
 
 function flushTaskCounts(tasks) {
-  for (let guid in tasks) {
-    updateTaskChainCounts(tasks[guid]);
+  SEEN_INDEX++;
+  for (let i = 0, l = tasks.length; i < l; ++i) {
+    let task = tasks[i];
+    if (task._seenIndex < SEEN_INDEX) {
+      task._seenIndex = SEEN_INDEX;
+      updateTaskChainCounts(task);
+    }
   }
 }
 
-function updateTaskChainCounts(_task) {
-  let task = _task;
-  let numRunning = task._numRunning;
-  let numQueued  = task._numQueued;
-  while (task) {
-    task.set('numRunning', numRunning);
-    task.set('numQueued', numQueued);
-    task._numRunning = task._numQueued = 0;
-    task = task.get('group');
+function updateTaskChainCounts(task) {
+  let numRunning = task.numRunning;
+  let numQueued  = task.numQueued;
+  let taskGroup = task.get('group');
+
+  while (taskGroup) {
+    set(taskGroup, 'numRunning', numRunning);
+    set(taskGroup, 'numQueued', numQueued);
+    taskGroup = taskGroup.get('group');
   }
+}
+
+function filterFinished(taskInstances) {
+  let ret = [];
+  for (let i = 0, l = taskInstances.length; i < l; ++i) {
+    let taskInstance = taskInstances[i];
+    if (get(taskInstance, 'isFinished') === false) {
+      ret.push(taskInstance);
+    }
+  }
+  return ret;
 }
 
 export default Scheduler;
-
 

@@ -1,10 +1,10 @@
-import Ember from 'ember';
+// BEGIN-SNIPPET start-task-example
+import Component from '@ember/component';
 import { task, timeout } from 'ember-concurrency';
 
-export default Ember.Component.extend({
+export default Component.extend({
   status: null,
 
-// BEGIN-SNIPPET start-task-example
   myTask: task(function * (msg = "init") {
     let status = `myTask.perform(${msg})...`;
     this.set('status', status);
@@ -25,6 +25,6 @@ export default Ember.Component.extend({
       this.trigger('foo', msg);
     }
   }
-// END-SNIPPET
 });
+// END-SNIPPET
 

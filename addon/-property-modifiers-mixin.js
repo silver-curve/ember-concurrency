@@ -1,4 +1,4 @@
-import Ember from 'ember';
+import { assert } from '@ember/debug';
 import Scheduler from './-scheduler';
 import {
   enqueueTasksPolicy,
@@ -13,6 +13,7 @@ export const propertyModifiers = {
   _maxConcurrency: Infinity,
   _taskGroupPath: null,
   _hasUsedModifier: false,
+  _hasSetBufferPolicy: false,
 
   restartable() {
     return setBufferPolicy(this, cancelOngoingTasksPolicy);
@@ -42,9 +43,15 @@ export const propertyModifiers = {
     assertModifiersNotMixedWithGroup(this);
     return this;
   },
+
+  debug() {
+    this._debug = true;
+    return this;
+  }
 };
 
 function setBufferPolicy(obj, policy) {
+  obj._hasSetBufferPolicy = true;
   obj._hasUsedModifier = true;
   obj._bufferPolicy = policy;
   assertModifiersNotMixedWithGroup(obj);
@@ -57,13 +64,13 @@ function setBufferPolicy(obj, policy) {
 }
 
 function assertModifiersNotMixedWithGroup(obj) {
-  Ember.assert(`ember-concurrency does not currently support using both .group() with other task modifiers (e.g. drop(), enqueue(), restartable())`, !obj._hasUsedModifier || !obj._taskGroupPath);
+  assert(`ember-concurrency does not currently support using both .group() with other task modifiers (e.g. drop(), enqueue(), restartable())`, !obj._hasUsedModifier || !obj._taskGroupPath);
 }
 
 export function resolveScheduler(propertyObj, obj, TaskGroup) {
   if (propertyObj._taskGroupPath) {
     let taskGroup = obj.get(propertyObj._taskGroupPath);
-    Ember.assert(`Expected path '${propertyObj._taskGroupPath}' to resolve to a TaskGroup object, but instead was ${taskGroup}`, taskGroup instanceof TaskGroup);
+    assert(`Expected path '${propertyObj._taskGroupPath}' to resolve to a TaskGroup object, but instead was ${taskGroup}`, taskGroup instanceof TaskGroup);
     return taskGroup._scheduler;
   } else {
     return Scheduler.create({
