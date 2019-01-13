@@ -1,7 +1,7 @@
 <h3>Errors vs Cancelation</h3>
 
 <p>
-  When you <code>yield aPromise</code>,
+  When you <code>yield</code> a promise,
   your task function will pause execution until one of three things happens:
 </p>
 
@@ -44,7 +44,7 @@
     {{link-to 'Task Modifiers' 'docs.task-concurrency'}} and <code>.isRunning / .isIdle</code>
     task properties as much as possible so that you're not manually re-implementing
     a lot of the implicit state that ember-concurrency provides you for free, e.g.
-    you should should avoid manually toggling the visibility of a loading spinner within
+    you should avoid manually toggling the visibility of a loading spinner within
     a task if you could accomplish the same thing using the <code>.isRunning</code>
     property on a task.
   </em>

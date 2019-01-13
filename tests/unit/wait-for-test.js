@@ -2,7 +2,7 @@ import Evented from '@ember/object/evented';
 import EmberObject from '@ember/object';
 import { run } from '@ember/runloop';
 import { module, test } from 'qunit';
-import { task, waitForQueue, waitForEvent, waitForProperty } from 'ember-concurrency';
+import { task, waitForQueue, waitForEvent, waitForProperty, race } from 'ember-concurrency';
 import { alias } from '@ember/object/computed';
 
 const EventedObject = EmberObject.extend(Evented);
@@ -234,5 +234,60 @@ module('Unit: test waitForQueue and waitForEvent and waitForProperty', function(
     assert.ok(obj.get('task.isRunning'));
     run(obj, 'set', 'a', 'hey');
     assert.ok(!obj.get('task.isRunning'));
+  });
+
+  test("passing a non-function value to waitForProperty will cause it to wait until the property equals that value", function(assert) {
+    assert.expect(4);
+
+    let state = 'null';
+    const Obj = EmberObject.extend({
+      a: 1,
+
+      task: task(function*() {
+        state = 'waiting for a===3';
+        yield waitForProperty(this, 'a', 3);
+        state = 'waiting for a===null';
+        yield waitForProperty(this, 'a', null);
+      })
+    });
+
+    let obj;
+    run(() => {
+      obj = Obj.create();
+      obj.get('task').perform();
+    });
+
+    run(obj, 'set', 'a', 1);
+    run(obj, 'set', 'a', 2);
+    assert.equal(state, 'waiting for a===3');
+    run(obj, 'set', 'a', 3);
+    assert.equal(state, 'waiting for a===null');
+    run(obj, 'set', 'a', 0);
+    run(obj, 'set', 'a', false);
+    assert.equal(state, 'waiting for a===null');
+    run(obj, 'set', 'a', null);
+    assert.ok(obj.get('task.isIdle'));
+  });
+
+  test("exposes a Promise interface that works with promise helpers", function(assert) {
+    assert.expect(4);
+
+    let obj = EventedObject.create();
+    let ev = null;
+    run(() => waitForEvent(obj, 'foo').then(v => { ev = v; }));
+    assert.equal(ev, null);
+    run(obj, 'trigger', 'foo', 123);
+    assert.equal(ev, 123);
+
+    ev = null;
+    run(() =>
+      race([
+        waitForEvent(obj, 'foo'),
+        waitForEvent(obj, 'bar'),
+      ]).then(v => { ev = v; })
+    )
+    assert.equal(ev, null);
+    run(obj, 'trigger', 'bar', 456);
+    assert.equal(ev, 456);
   });
 });

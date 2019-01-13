@@ -2,15 +2,22 @@ import { assert } from '@ember/debug';
 import { schedule } from '@ember/runloop';
 import { get } from '@ember/object';
 
-import { isEventedObject } from './utils';
+import { isEventedObject, yieldableToPromise } from './utils';
 
 import {
   yieldableSymbol,
   YIELDABLE_CONTINUE
 } from './utils';
 
-class WaitForQueueYieldable {
+class WaitFor {
+  then(...args) {
+    return yieldableToPromise(this).then(...args);
+  }
+}
+
+class WaitForQueueYieldable extends WaitFor {
   constructor(queueName) {
+    super();
     this.queueName = queueName;
   }
 
@@ -21,15 +28,18 @@ class WaitForQueueYieldable {
   }
 }
 
-class WaitForEventYieldable {
+class WaitForEventYieldable extends WaitFor {
   constructor(object, eventName) {
+    super();
     this.object = object;
     this.eventName = eventName;
   }
 
   [yieldableSymbol](taskInstance, resumeIndex) {
     let unbind = () => {};
+    let didFinish = false;
     let fn = (event) => {
+      didFinish = true;
       unbind();
       taskInstance.proceed(resumeIndex, YIELDABLE_CONTINUE, event);
     };
@@ -51,17 +61,25 @@ class WaitForEventYieldable {
       this.object.one(this.eventName, fn);
 
       return () => {
-        this.object.off(this.eventName, fn);
+        if (!didFinish) {
+          this.object.off(this.eventName, fn);
+        }
       };
     }
   }
 }
 
-class WaitForPropertyYieldable {
-  constructor(object, key, predicateCallback) {
+class WaitForPropertyYieldable extends WaitFor {
+  constructor(object, key, predicateCallback = Boolean) {
+    super();
     this.object = object;
     this.key = key;
-    this.predicateCallback = predicateCallback || Boolean;
+
+    if (typeof predicateCallback === 'function') {
+      this.predicateCallback = predicateCallback;
+    } else {
+      this.predicateCallback = (v) => v === predicateCallback;
+    }
   }
 
   [yieldableSymbol](taskInstance, resumeIndex) {
@@ -142,6 +160,9 @@ export function waitForEvent(object, eventName) {
  * immediately with the observed property's current value, and multiple
  * times thereafter whenever the property changes, until you return
  * a truthy value from the callback, or the current task is canceled.
+ * You can also pass in a non-Function value in place of the callback,
+ * in which case the task will continue executing when the property's
+ * value becomes the value that you passed in.
  *
  * ```js
  * import { task, waitForProperty } from 'ember-concurrency';
@@ -152,18 +173,25 @@ export function waitForEvent(object, eventName) {
  *     console.log("Waiting for `foo` to become 5");
  *
  *     yield waitForProperty(this, 'foo', v => v === 5);
+ *     // alternatively: yield waitForProperty(this, 'foo', 5);
  *
  *     // somewhere else: this.set('foo', 5)
  *
  *     console.log("`foo` is 5!");
+ *
+ *     // wait for another task to be idle before running:
+ *     yield waitForProperty(this, 'otherTask.isIdle');
+ *     console.log("otherTask is idle!");
  *   })
  * });
  * ```
  *
  * @param {object} object an object (most likely an Ember Object)
  * @param {string} key the property name that is observed for changes
- * @param {function} callback the callback that should return when the task should continue
- *                   executing
+ * @param {function} callbackOrValue a Function that should return a truthy value
+ *                                   when the task should continue executing, or
+ *                                   a non-Function value that the watched property
+ *                                   needs to equal before the task will continue running
  */
 export function waitForProperty(object, key, predicateCallback) {
   return new WaitForPropertyYieldable(object, key, predicateCallback);

@@ -31,7 +31,7 @@ approach).
 
 - [Open an Issue](https://github.com/machty/ember-concurrency/issues).
   - Try to replicate the issue within an [ember-twiddle][twiddle-starter]
-- Ask a question in the `#e-concurrency` channel at the [Ember.js Community Slack](https://embercommunity.slack.com)
+- Ask a question in the `#e-concurrency` channel at the [Ember Community Discord server](https://discord.gg/zT3asNS)
 
 ## Contributing
 
@@ -43,7 +43,6 @@ This project uses `yarn` as a package manager. If you're adding a new dependency
 
 * `git clone` this repository
 * `yarn install`
-* `bower install`
 
 ### Running
 
@@ -52,7 +51,7 @@ This project uses `yarn` as a package manager. If you're adding a new dependency
 
 ### Running Tests
 
-* `yarn test` (Runs `ember try:each` to test your addon against multiple Ember versions)
+* `yarn test:all` (Runs `ember try:each` to test your addon against multiple Ember versions)
 * `ember test`
 * `ember test --server`
 

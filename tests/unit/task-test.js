@@ -121,7 +121,55 @@ module('Unit: task', function(hooks) {
     });
 
     assert.deepEqual(instances.mapBy('isCanceled'), [true, true, true]);
-    assert.equal(instances[0].get('cancelReason'), "TaskInstance 'doStuff' was canceled because .cancelAll() was explicitly called on the Task. For more information, see: http://ember-concurrency.com/#/docs/task-cancelation-help");
+    assert.equal(instances[0].get('cancelReason'), "TaskInstance 'doStuff' was canceled because .cancelAll() was explicitly called on the Task. For more information, see: http://ember-concurrency.com/docs/task-cancelation-help");
+  });
+
+  test("task.cancelAll normally preserves the last derived state", function(assert) {
+    assert.expect(2);
+
+    let Obj = EmberObject.extend(Evented, {
+      doStuff: task(function * () {
+        yield timeout(1);
+        return 1;
+      }),
+    });
+
+    let instance;
+    return run(() => {
+      let obj = Obj.create();
+      let task = obj.get('doStuff');
+      instance = task.perform();
+      return instance.then(() => {
+        assert.equal(task.get('lastSuccessful.value'), 1);
+        instance = task.perform();
+        task.cancelAll();
+        assert.equal(task.get('lastSuccessful.value'), 1);
+      });
+    });
+  });
+
+  test("task.cancelAll({ resetState: true }) resets defired state", function(assert) {
+    assert.expect(2);
+
+    let Obj = EmberObject.extend(Evented, {
+      doStuff: task(function * () {
+        yield timeout(1);
+        return 1;
+      }),
+    });
+
+    let instance;
+    return run(() => {
+      let obj = Obj.create();
+      let task = obj.get('doStuff');
+      instance = task.perform();
+      return instance.then(() => {
+        assert.equal(task.get('lastSuccessful.value'), 1);
+        instance = task.perform();
+        task.cancelAll({ resetState: true });
+        assert.ok(!task.get('lastSuccessful.value'), 'expected there to be no last successful value');
+      });
+    });
   });
 
   test("cancelation due to task modifier supplies useful message", function(assert) {
@@ -141,7 +189,7 @@ module('Unit: task', function(hooks) {
     });
 
     assert.deepEqual(instances.mapBy('isCanceled'), [true, true, false]);
-    assert.equal(instances[0].get('cancelReason'), "TaskInstance 'doStuff' was canceled because it belongs to a 'restartable' Task that was .perform()ed again. For more information, see: http://ember-concurrency.com/#/docs/task-cancelation-help");
+    assert.equal(instances[0].get('cancelReason'), "TaskInstance 'doStuff' was canceled because it belongs to a 'restartable' Task that was .perform()ed again. For more information, see: http://ember-concurrency.com/docs/task-cancelation-help");
   });
 
   test("tasks can call cancelAll() on themselves", function(assert) {
@@ -407,7 +455,7 @@ module('Unit: task', function(hooks) {
 
     assert.deepEqual(logs, [
       [
-        "TaskInstance 'a' was canceled because the object it lives on was destroyed or unrendered. For more information, see: http://ember-concurrency.com/#/docs/task-cancelation-help"
+        "TaskInstance 'a' was canceled because the object it lives on was destroyed or unrendered. For more information, see: http://ember-concurrency.com/docs/task-cancelation-help"
       ]
     ]);
   });
@@ -436,7 +484,7 @@ module('Unit: task', function(hooks) {
 
     assert.deepEqual(logs, [
       [
-        "TaskInstance 'a' was canceled because the object it lives on was destroyed or unrendered. For more information, see: http://ember-concurrency.com/#/docs/task-cancelation-help"
+        "TaskInstance 'a' was canceled because the object it lives on was destroyed or unrendered. For more information, see: http://ember-concurrency.com/docs/task-cancelation-help"
       ]
     ]);
   });
@@ -563,5 +611,26 @@ module('Unit: task', function(hooks) {
         "You performed a .linked() task without immediately yielding/returning it. This is currently unsupported (but might be supported in future version of ember-concurrency)."
       ]
     ]);
+  });
+
+  test("ES5 getter syntax works", function(assert) {
+    let Obj = EmberObject.extend({
+      es5getterSyntaxSupported: computed(function() {
+        return "yes";
+      }),
+      task: task(function * () {
+        assert.ok(true);
+      }),
+    });
+
+    run(() => {
+      let obj = Obj.create();
+      if (obj.es5getterSyntaxSupported === 'yes') {
+        assert.expect(1);
+        obj.task.perform();
+      } else {
+        assert.expect(0);
+      }
+    });
   });
 });
